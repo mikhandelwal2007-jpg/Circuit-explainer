@@ -10,6 +10,17 @@ BASE_DIR = Path(__file__).resolve().parent
 PROMPT = (BASE_DIR / "prompt.txt").read_text()
 
 
+def get_secret(key: str, default: str = "") -> str:
+    """Retrieve secret from Streamlit Cloud secrets or fall back to environment variables / .env."""
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and key in st.secrets:
+            return str(st.secrets[key])
+    except Exception:
+        pass
+    return os.environ.get(key, default)
+
+
 def encode_image(image_path: str) -> str:
     path = Path(image_path).resolve()
     mime = "image/jpeg"
@@ -24,8 +35,8 @@ def encode_image(image_path: str) -> str:
 
 def ask_cloud_openrouter(image_path: str) -> str:
     from openai import OpenAI
-    api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    model_name = os.environ.get("OPENROUTER_MODEL", "google/gemma-4-31b-it")
+    api_key = get_secret("OPENROUTER_API_KEY") or get_secret("GEMINI_API_KEY")
+    model_name = get_secret("OPENROUTER_MODEL", "google/gemma-4-31b-it")
     client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
@@ -49,17 +60,19 @@ def ask_cloud_openrouter(image_path: str) -> str:
 
 def ask_gemini_native(image_path: str) -> str:
     import google.generativeai as genai
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"))
+    api_key = get_secret("GEMINI_API_KEY")
+    model_name = get_secret("GEMINI_MODEL", "gemini-3.8-flash")
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
     img = Image.open(str(Path(image_path).resolve()))
     return model.generate_content([PROMPT, img]).text
 
 
 def ask_gemini(image_path: str) -> str:
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    gemini_key = get_secret("GEMINI_API_KEY")
     if gemini_key and not gemini_key.startswith("sk-or-"):
         return ask_gemini_native(image_path)
-    if os.environ.get("OPENROUTER_API_KEY") or gemini_key.startswith("sk-or-"):
+    if get_secret("OPENROUTER_API_KEY") or gemini_key.startswith("sk-or-"):
         return ask_cloud_openrouter(image_path)
     return ask_gemini_native(image_path)
 
@@ -67,8 +80,9 @@ def ask_gemini(image_path: str) -> str:
 def ask_ollama(image_path: str) -> str:
     import ollama
     resolved_path = str(Path(image_path).resolve())
+    model_name = get_secret("OLLAMA_MODEL", "gemma4:latest")
     response = ollama.chat(
-        model=os.environ.get("OLLAMA_MODEL", "gemma4:latest"),
+        model=model_name,
         messages=[{"role": "user", "content": PROMPT, "images": [resolved_path]}],
         options={"temperature": 0, "num_ctx": 8192},
     )
@@ -100,36 +114,35 @@ def parse_json(text: str) -> dict:
 
 
 def get_backend_info(backend: Optional[str] = None) -> dict:
-    backend = (backend or os.getenv("BACKEND", "gemini")).lower()
+    backend = (backend or get_secret("BACKEND", "gemini")).lower()
     if backend in ["ollama", "local"]:
         return {
             "type": "Local",
             "provider": "Ollama (Offline)",
-            "model": os.environ.get("OLLAMA_MODEL", "gemma4:latest"),
+            "model": get_secret("OLLAMA_MODEL", "gemma4:latest"),
             "offline": True,
         }
     else:
-        gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        gemini_key = get_secret("GEMINI_API_KEY")
         if gemini_key and not gemini_key.startswith("sk-or-"):
             return {
                 "type": "Cloud",
                 "provider": "Google AI Studio",
-                "model": os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
+                "model": get_secret("GEMINI_MODEL", "gemini-3.8-flash"),
                 "offline": False,
             }
         return {
             "type": "Cloud",
             "provider": "OpenRouter",
-            "model": os.environ.get("OPENROUTER_MODEL", "google/gemma-4-31b-it"),
+            "model": get_secret("OPENROUTER_MODEL", "google/gemma-4-31b-it"),
             "offline": False,
         }
 
 
 def analyze(image_path: str, backend: Optional[str] = None) -> dict:
-    backend = (backend or os.getenv("BACKEND", "gemini")).lower()
+    backend = (backend or get_secret("BACKEND", "gemini")).lower()
     raw = ask_ollama(image_path) if backend in ["ollama", "local"] else ask_gemini(image_path)
     try:
         return parse_json(raw)
     except json.JSONDecodeError:
         return {"error": "Model did not return valid JSON", "raw": raw}
-
